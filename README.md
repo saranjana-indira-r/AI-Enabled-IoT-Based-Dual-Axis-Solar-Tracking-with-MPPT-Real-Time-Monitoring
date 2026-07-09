@@ -1,29 +1,31 @@
-# IoT-Based Dual Axis solar tracking System with and Real Time Monitoring (Phase 1)
+# IoT-Based Dual Axis solar tracking System and Real Time Monitoring (Phase 1)
 
 ## Overview
-This project is a Phase 1 simulation of an IoT-based solar energy monitoring system developed using ESP8266 and Wokwi. The system monitors solar panel voltage and battery parameters and displays real-time values through the Serial Monitor. It demonstrates the basic operation of an IoT-enabled renewable energy monitoring system.
+This project is a Phase 1 simulation of an IoT-based solar energy monitoring system developed using ESP32 and Wokwi. The system monitors LDR Sensors and Servomotors parameters and displays real-time values through the OLED Display. It demonstrates the basic operation of an IoT-Based Dual Axis solar tracking System and Real Time Monitoring.
 
 ## Features
-- Real-time voltage monitoring
+- Real-time LDR Sensors and Servomotors monitoring
 - ESP8266-based embedded programming
 - Wokwi simulation
-- Serial Monitor output
+- OLED Display output
 
 ## Technologies Used
-- ESP8266
-- Embedded C
+- ESP32
+- Embedded C/C++
 - Wokwi Simulator
 
 ## Components Used
-- ESP8266
-- Solar panel (simulated)
-- Voltage sensor (simulated)
+- ESP32
+- LDR Sensors (simulated)
+- Servomotors (simulated)
+- OLED Display (simulated)
 
 ## Folder Structure
 - Code
-- Report
-- Image
+- Report (Phase-1)
+- Images
 - Simulation
+- PPT
 
 ## Project Status
 ✅ Phase 1 (Simulation) Completed
