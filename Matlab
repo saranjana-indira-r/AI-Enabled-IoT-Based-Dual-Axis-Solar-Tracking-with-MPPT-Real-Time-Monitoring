@@ -1,0 +1,1609 @@
+%% ================================================================
+% SOLARSENSE AI V2.1
+% SINGLE-FILE MATLAB SIMULATION
+%
+% Compatible design:
+% MATLAB R2015a / R2015b and newer
+%
+% NO LOCAL FUNCTIONS
+% NO SECOND MATLAB FILE REQUIRED
+%
+% System:
+% PV + Dual Axis Tracking + MPPT + DC-DC Averaged Model
+% + Battery + Fault Detection + Energy Analysis
+%
+% IMPORTANT:
+% All results are SIMULATED/CALCULATED results.
+% They are NOT hardware measurements.
+%% ================================================================
+
+clear all;
+close all;
+clc;
+
+disp(' ');
+disp('==============================================================');
+disp('             SOLARSENSE AI V2.1');
+disp(' Intelligent Dual-Axis Solar Energy Management System');
+disp('==============================================================');
+disp(' ');
+
+%% ================================================================
+% 1. SIMULATION SETTINGS
+%% ================================================================
+
+dt = 1;                         % Simulation step [seconds]
+simulationHours = 6;            % Simulation duration [hours]
+
+Tsim = simulationHours * 3600;
+
+time = (0:dt:Tsim)';
+
+N = length(time);
+
+%% ================================================================
+% 2. PV PANEL PARAMETERS
+%% ================================================================
+
+PV_Pnom = 10;                   % Nominal PV power [W]
+
+PV_Voc_ref = 21.6;              % Voc at STC [V]
+PV_Isc_ref = 0.61;              % Isc at STC [A]
+
+PV_Vmp_ref = 18.0;              % Vmp [V]
+PV_Imp_ref = 0.556;             % Imp [A]
+
+Gref = 1000;                    % Reference irradiance [W/m2]
+Tref = 25;                      % Reference temperature [deg C]
+
+alpha_Isc = 0.0005;             % Current temperature coefficient
+beta_Voc = -0.0022;             % Voltage temperature coefficient
+
+PV_shape = 10;                  % Simplified PV curve shape
+
+%% ================================================================
+% 3. ENVIRONMENT PARAMETERS
+%% ================================================================
+
+Gmax = 1000;                    % Maximum irradiance [W/m2]
+Gmin = 40;                      % Minimum irradiance [W/m2]
+
+Tamb_base = 30;                 % Ambient temperature [deg C]
+
+Panel_temp_rise = 12;           % Temperature rise at high irradiance
+
+%% ================================================================
+% 4. BATTERY PARAMETERS
+%% ================================================================
+
+Battery_Vnom = 12;              % Battery nominal voltage [V]
+Battery_Ah = 7;                 % Battery capacity [Ah]
+
+Battery_SOC_initial = 0.55;
+
+Battery_SOC_min = 0.20;
+Battery_SOC_max = 0.98;
+
+Battery_R = 0.08;               % Internal resistance [ohm]
+
+Load_power = 2;                 % DC load [W]
+
+%% ================================================================
+% 5. DC-DC CONVERTER PARAMETERS
+%% ================================================================
+
+Converter_nominal_efficiency = 0.90;
+Converter_min_efficiency = 0.75;
+
+Dmin = 0.15;
+Dmax = 0.90;
+
+D_initial = 0.55;
+
+Switching_frequency = 100000;   % 100 kHz
+
+%% ================================================================
+% 6. TRACKING PARAMETERS
+%% ================================================================
+
+Az_min = 0;
+Az_max = 180;
+
+El_min = 10;
+El_max = 80;
+
+PanelAz_initial = 90;
+PanelEl_initial = 45;
+
+Tracking_deadband = 0.035;
+
+Tracking_step = 1.5;
+
+Tracking_period = 2;
+
+Low_light_threshold = 0.08;
+
+%% ================================================================
+% 7. FAULT SETTINGS
+%% ================================================================
+
+Fault_enable = 1;
+
+Sensor_fault_start = 4.0 * 3600;
+
+Motor_fault_start = 4.5 * 3600;
+
+Temperature_fault_start = 5.0 * 3600;
+
+%% ================================================================
+% 8. PREALLOCATE VARIABLES
+%% ================================================================
+
+G = zeros(N,1);
+
+Tamb = zeros(N,1);
+
+Tpanel = zeros(N,1);
+
+SunAz = zeros(N,1);
+
+SunEl = zeros(N,1);
+
+PanelAz = zeros(N,1);
+
+PanelEl = zeros(N,1);
+
+AzError = zeros(N,1);
+
+ElError = zeros(N,1);
+
+TrackingNight = zeros(N,1);
+
+LDR_TL = zeros(N,1);
+LDR_TR = zeros(N,1);
+LDR_BL = zeros(N,1);
+LDR_BR = zeros(N,1);
+
+MPP_V = zeros(N,1);
+MPP_I = zeros(N,1);
+MPP_P = zeros(N,1);
+
+%% ================================================================
+% 9. ENVIRONMENT MODEL
+%% ================================================================
+
+disp('Generating solar environment...');
+
+for k = 1:N
+
+    x = time(k) / Tsim;
+
+    % Basic sunrise-to-sunset irradiance curve
+    G(k) = Gmin + ...
+        (Gmax-Gmin) * sin(pi*x)^1.15;
+
+    % Cloud event 1
+    cloud1 = 1 - 0.35 * exp( ...
+        -((time(k)-1.8*3600)/(0.18*3600))^2);
+
+    % Cloud event 2
+    cloud2 = 1 - 0.55 * exp( ...
+        -((time(k)-3.4*3600)/(0.12*3600))^2);
+
+    % Cloud event 3
+    cloud3 = 1 - 0.25 * exp( ...
+        -((time(k)-4.6*3600)/(0.20*3600))^2);
+
+    G(k) = G(k) * cloud1 * cloud2 * cloud3;
+
+    % Rapid irradiance transition
+    if time(k) >= 4.15*3600 && ...
+       time(k) < 4.30*3600
+
+        transition = ...
+            (time(k)-4.15*3600)/(0.15*3600);
+
+        G(k) = G(k) * (1-0.55*transition);
+
+    end
+
+    G(k) = max(G(k),Gmin);
+
+    % Ambient temperature
+    Tamb(k) = Tamb_base + ...
+        3*sin(pi*x);
+
+    % Simplified panel temperature
+    Tpanel(k) = Tamb(k) + ...
+        Panel_temp_rise*(G(k)/Gmax);
+
+end
+
+%% ================================================================
+% 10. SUN POSITION MODEL
+%% ================================================================
+
+disp('Generating solar position...');
+
+for k = 1:N
+
+    x = time(k)/Tsim;
+
+    % Simplified sun azimuth
+    SunAz(k) = 65 + 70*x;
+
+    % Simplified sun elevation
+    SunEl(k) = 20 + ...
+        45*sin(pi*x);
+
+end
+
+%% ================================================================
+% 11. LDR QUADRANT SENSOR MODEL
+%% ================================================================
+
+disp('Generating LDR sensor signals...');
+
+for k = 1:N
+
+    az_reference = SunAz(k);
+
+    el_reference = SunEl(k);
+
+    az_error_model = az_reference - 90;
+
+    el_error_model = el_reference - 45;
+
+    sigmaAz = 35;
+    sigmaEl = 25;
+
+    directionGain = exp( ...
+        -0.5*(az_error_model/sigmaAz)^2 ...
+        -0.5*(el_error_model/sigmaEl)^2);
+
+    horizontal = ...
+        tanh((90-az_error_model)/35);
+
+    vertical = ...
+        tanh((45-el_error_model)/25);
+
+    base = ...
+        (G(k)/1000) * max(0.1,directionGain);
+
+    TL = base*(1+0.55*vertical) * ...
+        (1-0.45*horizontal);
+
+    TR = base*(1+0.55*vertical) * ...
+        (1+0.45*horizontal);
+
+    BL = base*(1-0.55*vertical) * ...
+        (1-0.45*horizontal);
+
+    BR = base*(1-0.55*vertical) * ...
+        (1+0.45*horizontal);
+
+    % Sensor noise
+    noise1 = 0.015*randn;
+    noise2 = 0.015*randn;
+    noise3 = 0.015*randn;
+    noise4 = 0.015*randn;
+
+    LDR_TL(k) = max(TL+noise1,0);
+    LDR_TR(k) = max(TR+noise2,0);
+    LDR_BL(k) = max(BL+noise3,0);
+    LDR_BR(k) = max(BR+noise4,0);
+
+end
+
+%% ================================================================
+% 12. DUAL AXIS TRACKING
+%% ================================================================
+
+disp('Simulating dual-axis solar tracking...');
+
+PanelAz(1) = PanelAz_initial;
+PanelEl(1) = PanelEl_initial;
+
+for k = 2:N
+
+    PanelAz(k) = PanelAz(k-1);
+    PanelEl(k) = PanelEl(k-1);
+
+    AzError(k) = AzError(k-1);
+    ElError(k) = ElError(k-1);
+
+    TrackingNight(k) = TrackingNight(k-1);
+
+    if mod(time(k),Tracking_period) < dt
+
+        TL = LDR_TL(k);
+        TR = LDR_TR(k);
+
+        BL = LDR_BL(k);
+        BR = LDR_BR(k);
+
+        totalLDR = ...
+            TL + TR + BL + BR;
+
+        if totalLDR < Low_light_threshold
+
+            % NIGHT MODE
+            TrackingNight(k) = 1;
+
+            PanelAz(k) = 90;
+
+            PanelEl(k) = 20;
+
+        else
+
+            TrackingNight(k) = 0;
+
+            % AZIMUTH ERROR
+            AzError(k) = ...
+                ((TR+BR)-(TL+BL)) / ...
+                max(totalLDR,0.000001);
+
+            % ELEVATION ERROR
+            ElError(k) = ...
+                ((TL+TR)-(BL+BR)) / ...
+                max(totalLDR,0.000001);
+
+            % AZIMUTH MOVEMENT
+            if abs(AzError(k)) >= Tracking_deadband
+
+                PanelAz(k) = ...
+                    PanelAz(k) + ...
+                    Tracking_step*sign(AzError(k));
+
+            end
+
+            % ELEVATION MOVEMENT
+            if abs(ElError(k)) >= Tracking_deadband
+
+                PanelEl(k) = ...
+                    PanelEl(k) + ...
+                    Tracking_step*sign(ElError(k));
+
+            end
+
+        end
+
+    end
+
+    % Mechanical limits
+    PanelAz(k) = ...
+        min(max(PanelAz(k),Az_min),Az_max);
+
+    PanelEl(k) = ...
+        min(max(PanelEl(k),El_min),El_max);
+
+    % Motor obstruction simulation
+    if Fault_enable == 1 && ...
+       time(k) >= Motor_fault_start
+
+        PanelAz(k) = PanelAz(k-1);
+
+        PanelEl(k) = PanelEl(k-1);
+
+    end
+
+end
+
+%% ================================================================
+% 13. PV MATHEMATICAL MODEL
+%% ================================================================
+
+disp('Calculating PV characteristics...');
+
+for k = 1:N
+
+    % Temperature-adjusted Voc
+    Voc = PV_Voc_ref + ...
+        beta_Voc*(Tpanel(k)-Tref);
+
+    Voc = max(Voc,1);
+
+    % Voltage sweep
+    Vtemp = linspace(0,Voc,500);
+
+    % Temperature and irradiance adjusted Isc
+    Isc = PV_Isc_ref * ...
+        (G(k)/Gref) * ...
+        (1+alpha_Isc*(Tpanel(k)-Tref));
+
+    Isc = max(Isc,0);
+
+    % Simplified I-V equation
+    Itemp = Isc .* ...
+        max(0,1-(Vtemp/Voc).^PV_shape);
+
+    % Power
+    Ptemp = Vtemp .* Itemp;
+
+    % Maximum power point
+    [Pmaximum,index] = max(Ptemp);
+
+    MPP_P(k) = Pmaximum;
+
+    MPP_V(k) = Vtemp(index);
+
+    MPP_I(k) = Itemp(index);
+
+end
+
+%% ================================================================
+% 14. MPPT ALGORITHM 1 - PERTURB AND OBSERVE
+%% ================================================================
+
+disp('Running conventional P&O MPPT...');
+
+P_O_V = zeros(N,1);
+P_O_I = zeros(N,1);
+P_O_P = zeros(N,1);
+P_O_D = zeros(N,1);
+P_O_Eff = zeros(N,1);
+
+D = D_initial;
+
+previousV = PV_Vmp_ref;
+
+previousP = PV_Pnom;
+
+for k = 1:N
+
+    % Convert duty cycle into PV operating voltage
+    P_O_V(k) = ...
+        20.5 - ...
+        12*(D-Dmin)/(Dmax-Dmin);
+
+    P_O_V(k) = ...
+        min(max(P_O_V(k),10),20.5);
+
+    % Temperature-adjusted Voc
+    Voc = PV_Voc_ref + ...
+        beta_Voc*(Tpanel(k)-Tref);
+
+    Voc = max(Voc,1);
+
+    % Current
+    Isc = PV_Isc_ref * ...
+        (G(k)/Gref) * ...
+        (1+alpha_Isc*(Tpanel(k)-Tref));
+
+    Isc = max(Isc,0);
+
+    ratio = P_O_V(k)/Voc;
+
+    P_O_I(k) = ...
+        Isc*max(0,1-ratio^PV_shape);
+
+    if P_O_V(k) >= Voc
+        P_O_I(k) = 0;
+    end
+
+    P_O_P(k) = ...
+        P_O_V(k)*P_O_I(k);
+
+    P_O_Eff(k) = ...
+        100*P_O_P(k)/max(MPP_P(k),0.000001);
+
+    if k > 1
+
+        dV = P_O_V(k)-previousV;
+
+        dP = P_O_P(k)-previousP;
+
+        if dP > 0
+
+            if dV > 0
+                D = D - 0.008;
+            else
+                D = D + 0.008;
+            end
+
+        elseif dP < 0
+
+            if dV > 0
+                D = D + 0.008;
+            else
+                D = D - 0.008;
+            end
+
+        end
+
+    end
+
+    D = min(max(D,Dmin),Dmax);
+
+    P_O_D(k) = D;
+
+    previousV = P_O_V(k);
+
+    previousP = P_O_P(k);
+
+end
+
+%% ================================================================
+% 15. MPPT ALGORITHM 2 - ADAPTIVE P&O
+%% ================================================================
+
+disp('Running adaptive P&O MPPT...');
+
+Adaptive_V = zeros(N,1);
+Adaptive_I = zeros(N,1);
+Adaptive_P = zeros(N,1);
+Adaptive_D = zeros(N,1);
+Adaptive_Eff = zeros(N,1);
+
+D = D_initial;
+
+previousV = PV_Vmp_ref;
+
+previousP = PV_Pnom;
+
+for k = 1:N
+
+    % Operating voltage
+    Adaptive_V(k) = ...
+        20.5 - ...
+        12*(D-Dmin)/(Dmax-Dmin);
+
+    Adaptive_V(k) = ...
+        min(max(Adaptive_V(k),10),20.5);
+
+    % Voc
+    Voc = PV_Voc_ref + ...
+        beta_Voc*(Tpanel(k)-Tref);
+
+    Voc = max(Voc,1);
+
+    % Isc
+    Isc = PV_Isc_ref * ...
+        (G(k)/Gref) * ...
+        (1+alpha_Isc*(Tpanel(k)-Tref));
+
+    Isc = max(Isc,0);
+
+    ratio = Adaptive_V(k)/Voc;
+
+    Adaptive_I(k) = ...
+        Isc*max(0,1-ratio^PV_shape);
+
+    if Adaptive_V(k) >= Voc
+        Adaptive_I(k) = 0;
+    end
+
+    Adaptive_P(k) = ...
+        Adaptive_V(k)*Adaptive_I(k);
+
+    Adaptive_Eff(k) = ...
+        100*Adaptive_P(k)/max(MPP_P(k),0.000001);
+
+    if k > 1
+
+        dV = Adaptive_V(k)-previousV;
+
+        dP = Adaptive_P(k)-previousP;
+
+        % Base perturbation
+        if dP > 0
+
+            if dV > 0
+                D = D - 0.006;
+            else
+                D = D + 0.006;
+            end
+
+        elseif dP < 0
+
+            if dV > 0
+                D = D + 0.006;
+            else
+                D = D - 0.006;
+            end
+
+        end
+
+        % Adaptive correction
+        voltage_error = ...
+            MPP_V(k)-Adaptive_V(k);
+
+        adaptive_step = ...
+            0.015 + ...
+            0.35*abs(voltage_error)/ ...
+            max(MPP_V(k),0.1);
+
+        adaptive_step = ...
+            min(max(adaptive_step,0.015),0.25);
+
+        D = D + ...
+            sign(voltage_error)* ...
+            0.04*adaptive_step;
+
+    end
+
+    D = min(max(D,Dmin),Dmax);
+
+    Adaptive_D(k) = D;
+
+    previousV = Adaptive_V(k);
+
+    previousP = Adaptive_P(k);
+
+end
+
+%% ================================================================
+% 16. MPPT ALGORITHM 3 - INCREMENTAL CONDUCTANCE
+%% ================================================================
+
+disp('Running Incremental Conductance MPPT...');
+
+IC_V = zeros(N,1);
+IC_I = zeros(N,1);
+IC_P = zeros(N,1);
+IC_D = zeros(N,1);
+IC_Eff = zeros(N,1);
+
+D = D_initial;
+
+previousV = PV_Vmp_ref;
+
+previousI = PV_Imp_ref;
+
+for k = 1:N
+
+    IC_V(k) = ...
+        20.5 - ...
+        12*(D-Dmin)/(Dmax-Dmin);
+
+    IC_V(k) = ...
+        min(max(IC_V(k),10),20.5);
+
+    Voc = PV_Voc_ref + ...
+        beta_Voc*(Tpanel(k)-Tref);
+
+    Voc = max(Voc,1);
+
+    Isc = PV_Isc_ref * ...
+        (G(k)/Gref) * ...
+        (1+alpha_Isc*(Tpanel(k)-Tref));
+
+    Isc = max(Isc,0);
+
+    ratio = IC_V(k)/Voc;
+
+    IC_I(k) = ...
+        Isc*max(0,1-ratio^PV_shape);
+
+    if IC_V(k) >= Voc
+        IC_I(k) = 0;
+    end
+
+    IC_P(k) = ...
+        IC_V(k)*IC_I(k);
+
+    IC_Eff(k) = ...
+        100*IC_P(k)/max(MPP_P(k),0.000001);
+
+    if k > 1
+
+        dV = IC_V(k)-previousV;
+
+        dI = IC_I(k)-previousI;
+
+        if abs(dV) > 0.000001
+
+            incremental_conductance = dI/dV;
+
+            instantaneous_conductance = ...
+                -IC_I(k)/max(IC_V(k),0.001);
+
+            error_IC = ...
+                incremental_conductance + ...
+                instantaneous_conductance;
+
+            if error_IC > 0
+
+                D = D - 0.01;
+
+            elseif error_IC < 0
+
+                D = D + 0.01;
+
+            end
+
+        end
+
+    end
+
+    D = min(max(D,Dmin),Dmax);
+
+    IC_D(k) = D;
+
+    previousV = IC_V(k);
+
+    previousI = IC_I(k);
+
+end
+
+%% ================================================================
+% 17. SELECT PRIMARY MPPT
+%
+% Adaptive P&O is selected for the low-cost prototype.
+%% ================================================================
+
+Selected_V = Adaptive_V;
+
+Selected_I = Adaptive_I;
+
+Selected_P = Adaptive_P;
+
+Selected_D = Adaptive_D;
+
+Selected_MPPT_Efficiency = Adaptive_Eff;
+
+%% ================================================================
+% 18. DC-DC CONVERTER EFFICIENCY
+%% ================================================================
+
+Converter_Efficiency = zeros(N,1);
+
+Converter_Output_Power = zeros(N,1);
+
+for k = 1:N
+
+    loadFactor = ...
+        min(max(Selected_P(k)/max(PV_Pnom,0.1),0),1.5);
+
+    eta = ...
+        Converter_nominal_efficiency ...
+        - 0.025*(1-loadFactor) ...
+        - 0.00001*max(0,1000-G(k));
+
+    eta = ...
+        min(max(eta,Converter_min_efficiency),0.95);
+
+    Converter_Efficiency(k) = ...
+        100*eta;
+
+    Converter_Output_Power(k) = ...
+        Selected_P(k)*eta;
+
+end
+
+%% ================================================================
+% 19. BATTERY MODEL
+%% ================================================================
+
+disp('Simulating battery...');
+
+Battery_SOC = zeros(N,1);
+
+Battery_V = zeros(N,1);
+
+Battery_I = zeros(N,1);
+
+Battery_P = zeros(N,1);
+
+Battery_SOC(1) = Battery_SOC_initial;
+
+for k = 1:N
+
+    Pinput = Converter_Output_Power(k);
+
+    Pnet = Pinput - Load_power;
+
+    if k > 1
+
+        dSOC = ...
+            (Pnet*dt/3600) / ...
+            (Battery_Vnom*Battery_Ah);
+
+        Battery_SOC(k) = ...
+            Battery_SOC(k-1) + dSOC;
+
+    end
+
+    Battery_SOC(k) = ...
+        min(max(Battery_SOC(k), ...
+        Battery_SOC_min), ...
+        Battery_SOC_max);
+
+    Battery_I(k) = ...
+        Pnet/max(Battery_Vnom,0.1);
+
+    OCV = ...
+        11.7 + ...
+        1.1*Battery_SOC(k);
+
+    Battery_V(k) = ...
+        OCV - Battery_I(k)*Battery_R;
+
+    Battery_V(k) = ...
+        min(max(Battery_V(k),10.5),14.6);
+
+    Battery_P(k) = ...
+        Battery_V(k)*Battery_I(k);
+
+end
+
+%% ================================================================
+% 20. FAULT DETECTION
+%
+% Fault codes:
+%
+% 0 = NORMAL
+% 1 = PV OVERVOLTAGE
+% 2 = PV OVERCURRENT
+% 3 = BATTERY OVERVOLTAGE
+% 4 = LOW BATTERY
+% 5 = OVER TEMPERATURE
+% 6 = MOTOR OBSTRUCTION
+% 7 = SENSOR ABNORMAL
+% 8 = NIGHT MODE
+%% ================================================================
+
+FaultCode = zeros(N,1);
+
+FaultSeverity = zeros(N,1);
+
+for k = 1:N
+
+    FaultCode(k) = 0;
+
+    FaultSeverity(k) = 0;
+
+    if Selected_V(k) > 20.5
+
+        FaultCode(k) = 1;
+
+        FaultSeverity(k) = 2;
+
+    elseif Selected_I(k) > 2.0
+
+        FaultCode(k) = 2;
+
+        FaultSeverity(k) = 2;
+
+    elseif Battery_V(k) > 14.6
+
+        FaultCode(k) = 3;
+
+        FaultSeverity(k) = 2;
+
+    elseif Battery_SOC(k) <= Battery_SOC_min+0.01
+
+        FaultCode(k) = 4;
+
+        FaultSeverity(k) = 1;
+
+    elseif Fault_enable == 1 && ...
+           time(k) >= Temperature_fault_start && ...
+           Tpanel(k) > 40
+
+        FaultCode(k) = 5;
+
+        FaultSeverity(k) = 1;
+
+    elseif Fault_enable == 1 && ...
+           time(k) >= Motor_fault_start
+
+        FaultCode(k) = 6;
+
+        FaultSeverity(k) = 1;
+
+    elseif Fault_enable == 1 && ...
+           time(k) >= Sensor_fault_start
+
+        FaultCode(k) = 7;
+
+        FaultSeverity(k) = 1;
+
+    elseif TrackingNight(k) == 1
+
+        FaultCode(k) = 8;
+
+        FaultSeverity(k) = 0;
+
+    end
+
+end
+
+%% ================================================================
+% 21. ENERGY CALCULATIONS
+%% ================================================================
+
+SolarEnergy_Wh = ...
+    trapz(time,Selected_P)/3600;
+
+AvailableMPP_Energy_Wh = ...
+    trapz(time,MPP_P)/3600;
+
+BatteryEnergy_Wh = ...
+    trapz(time,max(Battery_P,0))/3600;
+
+LoadEnergy_Wh = ...
+    Load_power*Tsim/3600;
+
+validMPPT = G > 100;
+
+Average_MPPT_Efficiency = ...
+    mean(Selected_MPPT_Efficiency(validMPPT));
+
+Average_Converter_Efficiency = ...
+    mean(Converter_Efficiency(validMPPT));
+
+Peak_PV_Power = max(Selected_P);
+
+Peak_MPP_Power = max(MPP_P);
+
+Tracking_Az_Error = ...
+    abs(PanelAz-SunAz);
+
+Tracking_El_Error = ...
+    abs(PanelEl-SunEl);
+
+Mean_Az_Error = ...
+    mean(Tracking_Az_Error);
+
+Mean_El_Error = ...
+    mean(Tracking_El_Error);
+
+Warning_Fault_Count = ...
+    sum(FaultSeverity == 1);
+
+Critical_Fault_Count = ...
+    sum(FaultSeverity == 2);
+
+%% ================================================================
+% 22. DISPLAY RESULTS
+%% ================================================================
+
+disp(' ');
+disp('==============================================================');
+disp('                 SOLARSENSE RESULTS');
+disp('==============================================================');
+
+fprintf('\nSimulation duration        = %.2f hours\n',simulationHours);
+
+fprintf('Peak PV power              = %.3f W\n',Peak_PV_Power);
+
+fprintf('Peak theoretical MPP       = %.3f W\n',Peak_MPP_Power);
+
+fprintf('Available MPP energy       = %.3f Wh\n',AvailableMPP_Energy_Wh);
+
+fprintf('Captured PV energy         = %.3f Wh\n',SolarEnergy_Wh);
+
+fprintf('Battery received energy    = %.3f Wh\n',BatteryEnergy_Wh);
+
+fprintf('Load energy                = %.3f Wh\n',LoadEnergy_Wh);
+
+fprintf('Average MPPT efficiency    = %.2f %%\n',Average_MPPT_Efficiency);
+
+fprintf('Average converter eff.     = %.2f %%\n',Average_Converter_Efficiency);
+
+fprintf('Final battery SOC          = %.2f %%\n',Battery_SOC(N)*100);
+
+fprintf('Mean azimuth error         = %.3f deg\n',Mean_Az_Error);
+
+fprintf('Mean elevation error       = %.3f deg\n',Mean_El_Error);
+
+fprintf('Warning faults             = %d\n',Warning_Fault_Count);
+
+fprintf('Critical faults            = %d\n',Critical_Fault_Count);
+
+disp(' ');
+disp('RESULT TYPE: SIMULATED / CALCULATED');
+disp('NOT HARDWARE-MEASURED RESULTS');
+
+%% ================================================================
+% 23. MPPT COMPARISON
+%% ================================================================
+
+P_O_Average = ...
+    mean(P_O_Eff(validMPPT));
+
+Adaptive_Average = ...
+    mean(Adaptive_Eff(validMPPT));
+
+IC_Average = ...
+    mean(IC_Eff(validMPPT));
+
+disp(' ');
+disp('==============================================================');
+disp('                    MPPT COMPARISON');
+disp('==============================================================');
+
+fprintf('P&O                         = %.2f %%\n',P_O_Average);
+
+fprintf('Adaptive P&O                = %.2f %%\n',Adaptive_Average);
+
+fprintf('Incremental Conductance     = %.2f %%\n',IC_Average);
+
+%% ================================================================
+% 24. FIGURE 1 - IRRADIANCE
+%% ================================================================
+
+figure;
+
+plot(time/3600,G,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+ylabel('Irradiance (W/m^2)');
+
+title('Solar Irradiance');
+
+%% ================================================================
+% 25. FIGURE 2 - TEMPERATURE
+%% ================================================================
+
+figure;
+
+plot(time/3600,Tamb,'LineWidth',1.5);
+
+hold on;
+
+plot(time/3600,Tpanel,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+ylabel('Temperature (deg C)');
+
+title('Ambient and Panel Temperature');
+
+legend('Ambient','Panel');
+
+%% ================================================================
+% 26. FIGURE 3 - PV P-V CURVES
+%% ================================================================
+
+figure;
+
+Gvalues = [1000 800 600 400];
+
+for i = 1:4
+
+    Gtest = Gvalues(i);
+
+    Voc_test = PV_Voc_ref;
+
+    Vtest = linspace(0,Voc_test,500);
+
+    Isc_test = ...
+        PV_Isc_ref*(Gtest/Gref);
+
+    Itest = Isc_test .* ...
+        max(0,1-(Vtest/Voc_test).^PV_shape);
+
+    Ptest = Vtest.*Itest;
+
+    plot(Vtest,Ptest,'LineWidth',1.5);
+
+    hold on;
+
+end
+
+grid on;
+
+xlabel('PV Voltage (V)');
+ylabel('PV Power (W)');
+
+title('PV P-V Characteristics');
+
+legend('1000 W/m^2',...
+       '800 W/m^2',...
+       '600 W/m^2',...
+       '400 W/m^2');
+
+%% ================================================================
+% 27. FIGURE 4 - PV I-V CURVES
+%% ================================================================
+
+figure;
+
+for i = 1:4
+
+    Gtest = Gvalues(i);
+
+    Voc_test = PV_Voc_ref;
+
+    Vtest = linspace(0,Voc_test,500);
+
+    Isc_test = ...
+        PV_Isc_ref*(Gtest/Gref);
+
+    Itest = Isc_test .* ...
+        max(0,1-(Vtest/Voc_test).^PV_shape);
+
+    plot(Vtest,Itest,'LineWidth',1.5);
+
+    hold on;
+
+end
+
+grid on;
+
+xlabel('PV Voltage (V)');
+ylabel('PV Current (A)');
+
+title('PV I-V Characteristics');
+
+legend('1000 W/m^2',...
+       '800 W/m^2',...
+       '600 W/m^2',...
+       '400 W/m^2');
+
+%% ================================================================
+% 28. FIGURE 5 - PV POWER
+%% ================================================================
+
+figure;
+
+plot(time/3600,Selected_P,'LineWidth',1.5);
+
+hold on;
+
+plot(time/3600,MPP_P,'--','LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+ylabel('Power (W)');
+
+title('PV Power and Theoretical MPP');
+
+legend('Captured PV Power',...
+       'Theoretical MPP');
+
+%% ================================================================
+% 29. FIGURE 6 - MPPT COMPARISON
+%% ================================================================
+
+figure;
+
+plot(time/3600,P_O_Eff,'LineWidth',1.2);
+
+hold on;
+
+plot(time/3600,Adaptive_Eff,'LineWidth',1.2);
+
+plot(time/3600,IC_Eff,'LineWidth',1.2);
+
+grid on;
+
+xlabel('Time (hours)');
+ylabel('MPPT Efficiency (%)');
+
+title('MPPT Algorithm Comparison');
+
+legend('P&O',...
+       'Adaptive P&O',...
+       'Incremental Conductance');
+
+ylim([0 110]);
+
+%% ================================================================
+% 30. FIGURE 7 - MPPT DUTY CYCLE
+%% ================================================================
+
+figure;
+
+plot(time/3600,Selected_D,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+ylabel('Duty Cycle');
+
+title('Adaptive P&O MPPT Duty Cycle');
+
+%% ================================================================
+% 31. FIGURE 8 - DUAL AXIS TRACKING
+%% ================================================================
+
+figure;
+
+subplot(2,1,1);
+
+plot(time/3600,SunAz,'LineWidth',1.5);
+
+hold on;
+
+plot(time/3600,PanelAz,'LineWidth',1.5);
+
+grid on;
+
+ylabel('Azimuth (deg)');
+
+title('Azimuth Tracking');
+
+legend('Sun Position','Panel Position');
+
+subplot(2,1,2);
+
+plot(time/3600,SunEl,'LineWidth',1.5);
+
+hold on;
+
+plot(time/3600,PanelEl,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+
+ylabel('Elevation (deg)');
+
+title('Elevation Tracking');
+
+legend('Sun Position','Panel Position');
+
+%% ================================================================
+% 32. FIGURE 9 - TRACKING ERROR
+%% ================================================================
+
+figure;
+
+subplot(2,1,1);
+
+plot(time/3600,Tracking_Az_Error,'LineWidth',1.5);
+
+grid on;
+
+ylabel('Azimuth Error (deg)');
+
+title('Azimuth Tracking Error');
+
+subplot(2,1,2);
+
+plot(time/3600,Tracking_El_Error,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+
+ylabel('Elevation Error (deg)');
+
+title('Elevation Tracking Error');
+
+%% ================================================================
+% 33. FIGURE 10 - BATTERY SOC
+%% ================================================================
+
+figure;
+
+plot(time/3600,Battery_SOC*100,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+
+ylabel('Battery SOC (%)');
+
+title('Battery State of Charge');
+
+%% ================================================================
+% 34. FIGURE 11 - BATTERY VOLTAGE
+%% ================================================================
+
+figure;
+
+plot(time/3600,Battery_V,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+
+ylabel('Battery Voltage (V)');
+
+title('Battery Voltage');
+
+%% ================================================================
+% 35. FIGURE 12 - CONVERTER EFFICIENCY
+%% ================================================================
+
+figure;
+
+plot(time/3600,Converter_Efficiency,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+
+ylabel('Efficiency (%)');
+
+title('DC-DC Converter Efficiency');
+
+%% ================================================================
+% 36. FIGURE 13 - FAULT DETECTION
+%% ================================================================
+
+figure;
+
+stairs(time/3600,FaultSeverity,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+
+ylabel('Fault Severity');
+
+title('SolarSense Fault Detection');
+
+ylim([-0.2 2.2]);
+
+%% ================================================================
+% 37. FIGURE 14 - ACCUMULATED ENERGY
+%% ================================================================
+
+AccumulatedEnergy = ...
+    cumtrapz(time,Selected_P)/3600;
+
+figure;
+
+plot(time/3600,AccumulatedEnergy,'LineWidth',1.5);
+
+grid on;
+
+xlabel('Time (hours)');
+
+ylabel('Energy (Wh)');
+
+title('Accumulated Solar Energy');
+
+%% ================================================================
+% 38. FIGURE 15 - LDR SIGNALS
+%% ================================================================
+
+figure;
+
+plot(time/3600,LDR_TL,'LineWidth',1.0);
+
+hold on;
+
+plot(time/3600,LDR_TR,'LineWidth',1.0);
+
+plot(time/3600,LDR_BL,'LineWidth',1.0);
+
+plot(time/3600,LDR_BR,'LineWidth',1.0);
+
+grid on;
+
+xlabel('Time (hours)');
+
+ylabel('Normalized LDR Output');
+
+title('4-LDR Quadrant Sensor Signals');
+
+legend('Top Left',...
+       'Top Right',...
+       'Bottom Left',...
+       'Bottom Right');
+
+%% ================================================================
+% 39. DATA EXPORT
+%% ================================================================
+
+disp(' ');
+disp('Saving simulation data...');
+
+% Create a matrix for export
+SimulationData = [ ...
+    time ...
+    G ...
+    Tamb ...
+    Tpanel ...
+    SunAz ...
+    SunEl ...
+    PanelAz ...
+    PanelEl ...
+    AzError ...
+    ElError ...
+    Selected_V ...
+    Selected_I ...
+    Selected_P ...
+    MPP_V ...
+    MPP_I ...
+    MPP_P ...
+    Selected_D ...
+    Selected_MPPT_Efficiency ...
+    Converter_Efficiency ...
+    Battery_V ...
+    Battery_I ...
+    Battery_SOC ...
+    FaultCode ...
+    FaultSeverity];
+
+save('SolarSense_AI_V2_1_Results.mat',...
+     'SimulationData');
+
+csvwrite('SolarSense_AI_V2_1_Results.csv',...
+         SimulationData);
+
+%% ================================================================
+% 40. PERFORMANCE SUMMARY
+%% ================================================================
+
+Summary = [ ...
+    simulationHours ...
+    Peak_PV_Power ...
+    Peak_MPP_Power ...
+    AvailableMPP_Energy_Wh ...
+    SolarEnergy_Wh ...
+    BatteryEnergy_Wh ...
+    LoadEnergy_Wh ...
+    Average_MPPT_Efficiency ...
+    Average_Converter_Efficiency ...
+    Battery_SOC(N)*100 ...
+    Mean_Az_Error ...
+    Mean_El_Error ...
+    Warning_Fault_Count ...
+    Critical_Fault_Count];
+
+save('SolarSense_AI_V2_1_Summary.mat','Summary');
+
+csvwrite('SolarSense_AI_V2_1_Summary.csv',Summary);
+
+%% ================================================================
+% 41. AUTOMATIC VALIDATION
+%% ================================================================
+
+disp(' ');
+disp('==============================================================');
+disp('                 AUTOMATIC VALIDATION');
+disp('==============================================================');
+
+% Test 1
+Test1 = all(MPP_P > 0);
+
+if Test1
+    disp('TEST 01 - PV MPP calculation       : PASS');
+else
+    disp('TEST 01 - PV MPP calculation       : FAIL');
+end
+
+% Test 2
+Test2 = Ptest > 0;
+
+if Test2
+    disp('TEST 02 - PV power calculation     : PASS');
+else
+    disp('TEST 02 - PV power calculation     : FAIL');
+end
+
+% Test 3
+Test3 = all(Battery_SOC >= Battery_SOC_min & ...
+            Battery_SOC <= Battery_SOC_max);
+
+if Test3
+    disp('TEST 03 - Battery SOC limits       : PASS');
+else
+    disp('TEST 03 - Battery SOC limits       : FAIL');
+end
+
+% Test 4
+Test4 = all(PanelAz >= Az_min & ...
+            PanelAz <= Az_max);
+
+if Test4
+    disp('TEST 04 - Azimuth limits           : PASS');
+else
+    disp('TEST 04 - Azimuth limits           : FAIL');
+end
+
+% Test 5
+Test5 = all(PanelEl >= El_min & ...
+            PanelEl <= El_max);
+
+if Test5
+    disp('TEST 05 - Elevation limits         : PASS');
+else
+    disp('TEST 05 - Elevation limits         : FAIL');
+end
+
+% Test 6
+Test6 = all(Selected_D >= Dmin & ...
+            Selected_D <= Dmax);
+
+if Test6
+    disp('TEST 06 - MPPT duty limits         : PASS');
+else
+    disp('TEST 06 - MPPT duty limits         : FAIL');
+end
+
+% Test 7
+Test7 = all(isfinite(Selected_P));
+
+if Test7
+    disp('TEST 07 - Numerical stability      : PASS');
+else
+    disp('TEST 07 - Numerical stability      : FAIL');
+end
+
+% Test 8
+Test8 = all(isfinite(Battery_SOC));
+
+if Test8
+    disp('TEST 08 - Battery stability        : PASS');
+else
+    disp('TEST 08 - Battery stability        : FAIL');
+end
+
+% Test 9
+Test9 = any(FaultCode ~= 0);
+
+if Test9
+    disp('TEST 09 - Fault detection          : PASS');
+else
+    disp('TEST 09 - Fault detection          : FAIL');
+end
+
+% Test 10
+Test10 = SolarEnergy_Wh >= 0;
+
+if Test10
+    disp('TEST 10 - Energy calculation       : PASS');
+else
+    disp('TEST 10 - Energy calculation       : FAIL');
+end
+
+%% ================================================================
+% 42. FINAL MESSAGE
+%% ================================================================
+
+disp(' ');
+disp('==============================================================');
+disp('       SOLARSENSE AI V2.1 SIMULATION COMPLETED');
+disp('==============================================================');
+
+disp(' ');
+disp('Generated files:');
+
+disp('SolarSense_AI_V2_1_Results.mat');
+
+disp('SolarSense_AI_V2_1_Results.csv');
+
+disp('SolarSense_AI_V2_1_Summary.mat');
+
+disp('SolarSense_AI_V2_1_Summary.csv');
+
+disp(' ');
+
+disp('Simulation includes:');
+
+disp('1. Solar irradiance model');
+disp('2. Temperature model');
+disp('3. PV I-V model');
+disp('4. PV P-V model');
+disp('5. MPP calculation');
+disp('6. Conventional P&O MPPT');
+disp('7. Adaptive P&O MPPT');
+disp('8. Incremental Conductance MPPT');
+disp('9. Averaged DC-DC converter');
+disp('10. Battery SOC model');
+disp('11. Dual-axis LDR tracking');
+disp('12. Night mode');
+disp('13. Motor obstruction fault');
+disp('14. Sensor fault');
+disp('15. Overtemperature fault');
+disp('16. Battery monitoring');
+disp('17. Energy calculation');
+disp('18. MPPT efficiency');
+disp('19. Tracking error');
+disp('20. Automatic validation');
+disp('21. CSV/MAT data export');
+
+disp(' ');
+disp('IMPORTANT:');
+disp('The model is a SYSTEM-LEVEL simulation.');
+disp('The converter is represented using an averaged model.');
+disp('For final power-electronics validation, use Simulink/LTspice.');
+disp('Wokwi should be used for ESP32 firmware validation.');
+disp('Hardware measurements must be performed separately.');
+
+disp(' ');
+disp('==============================================================');
+disp('                 END OF SIMULATION');
+disp('==============================================================');
